@@ -17,6 +17,9 @@ import (
 )
 
 var modelFilter map[string]struct{}
+var freeModels []string
+var failureStore *FailureStore
+var freeMode bool
 
 func loadModelFilter(path string) (map[string]struct{}, error) {
 	file, err := os.Open(path)
@@ -53,6 +56,24 @@ func main() {
 			slog.Error("OPENAI_API_KEY environment variable or command-line argument not set.")
 			return
 		}
+	}
+
+	freeMode = strings.ToLower(os.Getenv("FREE_MODE")) == "true"
+
+	if freeMode {
+		var err error
+		freeModels, err = ensureFreeModelFile(apiKey, "free-models")
+		if err != nil {
+			slog.Error("failed to load free models", "error", err)
+			return
+		}
+		failureStore, err = NewFailureStore("failures.db")
+		if err != nil {
+			slog.Error("failed to init failure store", "error", err)
+			return
+		}
+		defer failureStore.Close()
+		slog.Info("Free mode enabled", "models", len(freeModels))
 	}
 
 	provider := NewOpenrouterProvider(apiKey)
@@ -158,21 +179,30 @@ func main() {
 		// для сбора полного ответа и отправки его одним JSON.
 		// Пока реализуем только стриминг.
 		if !streamRequested {
-			// Handle non-streaming response
-			fullModelName, err := provider.GetFullModelName(request.Model)
-			if err != nil {
-				slog.Error("Error getting full model name", "Error", err)
-				// Ollama returns 404 for invalid model names
-				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-				return
-			}
-
-			// Call Chat to get the complete response
-			response, err := provider.Chat(request.Messages, fullModelName)
-			if err != nil {
-				slog.Error("Failed to get chat response", "Error", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
+			var response openai.ChatCompletionResponse
+			var fullModelName string
+			var err error
+			if freeMode {
+				response, fullModelName, err = getFreeChat(provider, request.Messages)
+				if err != nil {
+					slog.Error("free mode failed", "error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+			} else {
+				fullModelName, err = provider.GetFullModelName(request.Model)
+				if err != nil {
+					slog.Error("Error getting full model name", "Error", err)
+					// Ollama returns 404 for invalid model names
+					c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+					return
+				}
+				response, err = provider.Chat(request.Messages, fullModelName)
+				if err != nil {
+					slog.Error("Failed to get chat response", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
 			}
 
 			// Format the response according to Ollama's format
@@ -195,8 +225,8 @@ func main() {
 
 			// Create Ollama-compatible response
 			ollamaResponse := map[string]interface{}{
-				"model":             fullModelName,
-				"created_at":        time.Now().Format(time.RFC3339),
+				"model":      fullModelName,
+				"created_at": time.Now().Format(time.RFC3339),
 				"message": map[string]string{
 					"role":    "assistant",
 					"content": content,
@@ -210,22 +240,39 @@ func main() {
 				"eval_duration":     response.Usage.CompletionTokens * 10, // Approximate duration based on token count
 			}
 
+			slog.Info("Used model", "model", fullModelName)
+
 			c.JSON(http.StatusOK, ollamaResponse)
 			return
 		}
 
 		slog.Info("Requested model", "model", request.Model)
-		fullModelName, err := provider.GetFullModelName(request.Model)
-		if err != nil {
-			slog.Error("Error getting full model name", "Error", err, "model", request.Model)
-			// Ollama возвращает 404 на неправильное имя модели
-			c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
-			return
+		var stream *openai.ChatCompletionStream
+		var fullModelName string
+		var err error
+		if freeMode {
+			stream, fullModelName, err = getFreeStream(provider, request.Messages)
+			if err != nil {
+				slog.Error("free mode failed", "error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
+		} else {
+			fullModelName, err = provider.GetFullModelName(request.Model)
+			if err != nil {
+				slog.Error("Error getting full model name", "Error", err, "model", request.Model)
+				c.JSON(http.StatusNotFound, gin.H{"error": err.Error()})
+				return
+			}
+			stream, err = provider.ChatStream(request.Messages, fullModelName)
+			if err != nil {
+				slog.Error("Failed to create stream", "Error", err)
+				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+				return
+			}
 		}
 		slog.Info("Using model", "fullModelName", fullModelName)
-
 		// Call ChatStream to get the stream
-		stream, err := provider.ChatStream(request.Messages, fullModelName)
 		if err != nil {
 			slog.Error("Failed to create stream", "Error", err)
 			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
@@ -309,8 +356,8 @@ func main() {
 
 		// ВАЖНО: Замените nil на 0 для числовых полей статистики
 		finalResponse := map[string]interface{}{
-			"model":             fullModelName,
-			"created_at":        time.Now().Format(time.RFC3339),
+			"model":      fullModelName,
+			"created_at": time.Now().Format(time.RFC3339),
 			"message": map[string]string{
 				"role":    "assistant",
 				"content": "", // Пустой контент для финального сообщения
@@ -342,4 +389,47 @@ func main() {
 	})
 
 	r.Run(":11434")
+}
+
+func getFreeChat(provider *OpenrouterProvider, msgs []openai.ChatCompletionMessage) (openai.ChatCompletionResponse, string, error) {
+	var resp openai.ChatCompletionResponse
+	for _, m := range freeModels {
+		skip, err := failureStore.ShouldSkip(m)
+		if err != nil {
+			slog.Error("db error", "error", err)
+			continue
+		}
+		if skip {
+			continue
+		}
+		resp, err = provider.Chat(msgs, m)
+		if err != nil {
+			slog.Warn("model failed", "model", m, "error", err)
+			_ = failureStore.MarkFailure(m)
+			continue
+		}
+		return resp, m, nil
+	}
+	return resp, "", fmt.Errorf("no free models available")
+}
+
+func getFreeStream(provider *OpenrouterProvider, msgs []openai.ChatCompletionMessage) (*openai.ChatCompletionStream, string, error) {
+	for _, m := range freeModels {
+		skip, err := failureStore.ShouldSkip(m)
+		if err != nil {
+			slog.Error("db error", "error", err)
+			continue
+		}
+		if skip {
+			continue
+		}
+		stream, err := provider.ChatStream(msgs, m)
+		if err != nil {
+			slog.Warn("model failed", "model", m, "error", err)
+			_ = failureStore.MarkFailure(m)
+			continue
+		}
+		return stream, m, nil
+	}
+	return nil, "", fmt.Errorf("no free models available")
 }

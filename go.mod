@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	github.com/gin-gonic/gin v1.10.0
+	github.com/mattn/go-sqlite3 v1.14.18
 	github.com/sashabaranov/go-openai v1.36.0
 )
 
