@@ -7,6 +7,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"time"
 )
 
 type orModels struct {
@@ -64,24 +65,48 @@ func fetchFreeModels(apiKey string) ([]string, error) {
 }
 
 func ensureFreeModelFile(apiKey, path string) ([]string, error) {
-	if _, err := os.Stat(path); err == nil {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return nil, err
-		}
-		var models []string
-		for _, line := range strings.Split(string(data), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" {
-				models = append(models, line)
+	const cacheMaxAge = 24 * time.Hour // Refresh cache daily
+
+	if stat, err := os.Stat(path); err == nil {
+		// Check if cache is still fresh
+		if time.Since(stat.ModTime()) < cacheMaxAge {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return nil, err
 			}
+			var models []string
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" {
+					models = append(models, line)
+				}
+			}
+			return models, nil
 		}
-		return models, nil
+		// Cache is stale, will fetch fresh models below
 	}
+
+	// Fetch fresh models from API
 	models, err := fetchFreeModels(apiKey)
 	if err != nil {
+		// If fetch fails but we have a cached file (even if stale), use it
+		if _, statErr := os.Stat(path); statErr == nil {
+			data, readErr := os.ReadFile(path)
+			if readErr == nil {
+				var cachedModels []string
+				for _, line := range strings.Split(string(data), "\n") {
+					line = strings.TrimSpace(line)
+					if line != "" {
+						cachedModels = append(cachedModels, line)
+					}
+				}
+				return cachedModels, nil
+			}
+		}
 		return nil, err
 	}
+
+	// Save fresh models to cache
 	_ = os.WriteFile(path, []byte(strings.Join(models, "\n")), 0644)
 	return models, nil
 }

@@ -38,8 +38,21 @@ func (s *FailureStore) ShouldSkip(model string) (bool, error) {
 	if err != nil {
 		return false, err
 	}
-	if time.Since(time.Unix(ts, 0)) < 15*time.Minute {
+	// Reduced cooldown from 15 minutes to 5 minutes for faster recovery
+	if time.Since(time.Unix(ts, 0)) < 5*time.Minute {
 		return true, nil
 	}
 	return false, nil
+}
+
+// ClearFailure removes a model from the failure store (for successful requests)
+func (s *FailureStore) ClearFailure(model string) error {
+	_, err := s.db.Exec(`DELETE FROM failures WHERE model=?`, model)
+	return err
+}
+
+// ResetAllFailures clears all failure records (useful for testing or manual reset)
+func (s *FailureStore) ResetAllFailures() error {
+	_, err := s.db.Exec(`DELETE FROM failures`)
+	return err
 }
