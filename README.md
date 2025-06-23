@@ -3,6 +3,8 @@ This proxy automatically selects and uses free models from OpenRouter, exposing 
 
 It hasn't been extensively tested with paid models, but it should work with any OpenRouter model that is compatible with the OpenAI API.
 
+This is heavily vibecoded and may not be production-ready. It is intended for personal use and experimentation and is likely to change.
+
 ## Features
 - **Free Mode (Default)**: Automatically selects and uses free models from OpenRouter with intelligent fallback. Enabled by default unless `FREE_MODE=false` is set.
 - **Model Filtering**: Create a `models-filter/filter` file with model name patterns (one per line). Supports partial matching - `gemini` matches `gemini-2.0-flash-exp:free`. Works in both free and non-free modes.
