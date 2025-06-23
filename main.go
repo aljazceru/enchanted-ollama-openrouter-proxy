@@ -74,7 +74,7 @@ func main() {
 
 	provider := NewOpenrouterProvider(apiKey)
 
-	filter, err := loadModelFilter("models-filter")
+	filter, err := loadModelFilter("/models-filter/filter")
 	if err != nil {
 		if os.IsNotExist(err) {
 			slog.Info("models-filter file not found. Skipping model filtering.")
@@ -118,6 +118,11 @@ func main() {
 				// Extract display name from full model name
 				parts := strings.Split(freeModel, "/")
 				displayName := parts[len(parts)-1]
+
+				// Apply model filter if it exists
+				if !isModelInFilter(displayName, modelFilter) {
+					continue // Skip models not in filter
+				}
 
 				newModels = append(newModels, map[string]interface{}{
 					"name":        displayName,
@@ -562,6 +567,10 @@ func main() {
 
 		if freeMode {
 			// In free mode, show only available free models
+			slog.Info("Free mode enabled for /v1/models", "totalFreeModels", len(freeModels), "filterSize", len(modelFilter))
+			if len(freeModels) > 0 {
+				slog.Info("Sample free models:", "first", freeModels[0], "count", min(len(freeModels), 3))
+			}
 			for _, freeModel := range freeModels {
 				skip, err := failureStore.ShouldSkip(freeModel)
 				if err != nil {
@@ -575,6 +584,16 @@ func main() {
 				parts := strings.Split(freeModel, "/")
 				displayName := parts[len(parts)-1]
 
+				// Apply model filter if it exists
+				if !isModelInFilter(displayName, modelFilter) {
+					slog.Info("Skipping model not in filter", "displayName", displayName, "fullModel", freeModel)
+					continue // Skip models not in filter
+				}
+				if len(modelFilter) > 0 {
+					slog.Info("Model passed filter", "displayName", displayName, "fullModel", freeModel)
+				}
+
+				slog.Debug("Adding model to /v1/models", "model", displayName, "fullModel", freeModel)
 				models = append(models, gin.H{
 					"id":       displayName,
 					"object":   "model",
@@ -606,6 +625,7 @@ func main() {
 			}
 		}
 
+		slog.Info("Returning models response", "modelCount", len(models))
 		c.JSON(http.StatusOK, gin.H{
 			"object": "list",
 			"data":   models,
@@ -618,6 +638,13 @@ func main() {
 func getFreeChat(provider *OpenrouterProvider, msgs []openai.ChatCompletionMessage) (openai.ChatCompletionResponse, string, error) {
 	var resp openai.ChatCompletionResponse
 	for _, m := range freeModels {
+		// Apply model filter if it exists
+		parts := strings.Split(m, "/")
+		displayName := parts[len(parts)-1]
+		if !isModelInFilter(displayName, modelFilter) {
+			continue // Skip models not in filter
+		}
+
 		skip, err := failureStore.ShouldSkip(m)
 		if err != nil {
 			slog.Error("db error", "error", err)
@@ -641,6 +668,13 @@ func getFreeChat(provider *OpenrouterProvider, msgs []openai.ChatCompletionMessa
 
 func getFreeStream(provider *OpenrouterProvider, msgs []openai.ChatCompletionMessage) (*openai.ChatCompletionStream, string, error) {
 	for _, m := range freeModels {
+		// Apply model filter if it exists
+		parts := strings.Split(m, "/")
+		displayName := parts[len(parts)-1]
+		if !isModelInFilter(displayName, modelFilter) {
+			continue // Skip models not in filter
+		}
+
 		skip, err := failureStore.ShouldSkip(m)
 		if err != nil {
 			slog.Error("db error", "error", err)
@@ -668,6 +702,10 @@ func resolveDisplayNameToFullModel(displayName string) string {
 		parts := strings.Split(fullModel, "/")
 		modelDisplayName := parts[len(parts)-1]
 		if modelDisplayName == displayName {
+			// Apply model filter if it exists
+			if !isModelInFilter(displayName, modelFilter) {
+				continue // Skip models not in filter
+			}
 			return fullModel
 		}
 	}
@@ -722,6 +760,20 @@ func getFreeStreamForModel(provider *OpenrouterProvider, msgs []openai.ChatCompl
 func contains(slice []string, item string) bool {
 	for _, s := range slice {
 		if s == item {
+			return true
+		}
+	}
+	return false
+}
+
+// isModelInFilter checks if a model name matches any filter pattern (supports partial matches)
+func isModelInFilter(modelName string, filter map[string]struct{}) bool {
+	if len(filter) == 0 {
+		return true // No filter means all models are allowed
+	}
+	
+	for filterPattern := range filter {
+		if strings.Contains(modelName, filterPattern) {
 			return true
 		}
 	}

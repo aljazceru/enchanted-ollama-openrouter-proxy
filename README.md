@@ -5,10 +5,7 @@ It hasn't been extensively tested with paid models, but it should work with any 
 
 ## Features
 - **Free Mode (Default)**: Automatically selects and uses free models from OpenRouter with intelligent fallback. Enabled by default unless `FREE_MODE=false` is set.
-- **Model Filtering**: You can provide a `models-filter` file in the same directory as the proxy. Each line in this file should contain a single model name. The proxy will only show models that match these entries. If the file doesn’t exist or is empty, no filtering is applied.
-  
-  **Note**: OpenRouter model names may sometimes include a vendor prefix, for example `deepseek/deepseek-chat-v3-0324:free`. To make sure filtering works correctly, remove the vendor part when adding the name to your `models-filter` file, e.g. `deepseek-chat-v3-0324:free`.
-  
+- **Model Filtering**: Create a `models-filter/filter` file with model name patterns (one per line). Supports partial matching - `gemini` matches `gemini-2.0-flash-exp:free`. Works in both free and non-free modes.
 - **Ollama-like API**: The server listens on `11434` and exposes endpoints similar to Ollama (e.g., `/api/chat`, `/api/tags`).
 - **Model Listing**: Fetch a list of available models from OpenRouter.
 - **Model Details**: Retrieve metadata about a specific model.
@@ -131,7 +128,13 @@ curl -X POST http://localhost:11434/v1/chat/completions \
    FREE_MODE=true
    ```
 
-3. **Run with Docker Compose**:
+
+3. **Optional: Create model filter**:
+   ```bash
+   mkdir -p models-filter
+   echo "gemini" > models-filter/filter  # Only show Gemini models
+   ```
+4. **Run with Docker Compose**:
    ```bash
    docker compose up -d
    ```
