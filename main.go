@@ -58,7 +58,7 @@ func main() {
 		}
 	}
 
-	freeMode = strings.ToLower(os.Getenv("FREE_MODE")) == "true"
+	freeMode = strings.ToLower(os.Getenv("FREE_MODE")) != "false"
 
 	if freeMode {
 		var err error
