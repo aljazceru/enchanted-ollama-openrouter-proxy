@@ -1,19 +1,27 @@
 FROM golang:latest AS builder
 WORKDIR /app
 
+# Install build dependencies for CGO/SQLite
+RUN apt-get update && apt-get install -y \
+    gcc \
+    libc6-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY go.mod go.sum ./
 RUN go mod download
 
 COPY . .
 
-RUN CGO_ENABLED=0 go build -o ollama-proxy
+# Enable CGO for SQLite support
+RUN CGO_ENABLED=1 GOOS=linux go build -a -installsuffix cgo -o ollama-proxy
 
 
-FROM scratch
-LABEL author="Mark Nefedov"
-LABEL org.opencontainers.image.source="https://github.com/marknefedov/ollama-openrouter-proxy"
-COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+FROM debian:bookworm-slim
+RUN apt-get update && apt-get install -y \
+    ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /app/ollama-proxy /ollama-proxy
 
-EXPOSE 8080
+EXPOSE 11434
 ENTRYPOINT ["/ollama-proxy"]
