@@ -1,15 +1,14 @@
-version: '3.8'
-
 services:
   ollama-proxy:
     build: .
     ports:
-      - "11434:11434"
+      - "21434:11434"
     env_file:
       - .env
     environment:
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - FREE_MODE=${FREE_MODE:-true}
+      - TOOL_USE_ONLY=${TOOL_USE_ONLY:-false}
     volumes:
       - ./models-filter:/models-filter:ro
       - proxy-data:/data

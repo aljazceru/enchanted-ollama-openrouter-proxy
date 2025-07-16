@@ -100,6 +100,9 @@ func main() {
 
 	r.GET("/api/tags", func(c *gin.Context) {
 		var newModels []map[string]interface{}
+		
+		// Check if tool use filtering is enabled
+		toolUseOnly := strings.ToLower(os.Getenv("TOOL_USE_ONLY")) == "true"
 
 		if freeMode {
 			// In free mode, show only available free models
@@ -142,29 +145,96 @@ func main() {
 			}
 		} else {
 			// Non-free mode: use original logic
-			models, err := provider.GetModels()
-			if err != nil {
-				slog.Error("Error getting models", "Error", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
-				return
-			}
-			filter := modelFilter
-			newModels = make([]map[string]interface{}, 0, len(models))
-			for _, m := range models {
-				// Если фильтр пустой, значит пропускаем проверку и берём все модели
-				if len(filter) > 0 {
-					if _, ok := filter[m.Model]; !ok {
-						continue
-					}
+			if toolUseOnly {
+				// If tool use filtering is enabled, we need to fetch full model details from OpenRouter
+				req, err := http.NewRequest("GET", "https://openrouter.ai/api/v1/models", nil)
+				if err != nil {
+					slog.Error("Error creating request for models", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
 				}
-				newModels = append(newModels, map[string]interface{}{
-					"name":        m.Name,
-					"model":       m.Model,
-					"modified_at": m.ModifiedAt,
-					"size":        270898672,
-					"digest":      "9077fe9d2ae1a4a41a868836b56b8163731a8fe16621397028c2c76f838c6907",
-					"details":     m.Details,
-				})
+				req.Header.Set("Authorization", "Bearer "+os.Getenv("OPENAI_API_KEY"))
+				
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					slog.Error("Error fetching models from OpenRouter", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				defer resp.Body.Close()
+				
+				if resp.StatusCode != http.StatusOK {
+					slog.Error("Unexpected status from OpenRouter", "status", resp.Status)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch models"})
+					return
+				}
+				
+				var result orModels
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					slog.Error("Error decoding models response", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				
+				// Filter models based on tool use support and model filter
+				currentTime := time.Now().Format(time.RFC3339)
+				newModels = make([]map[string]interface{}, 0, len(result.Data))
+				for _, m := range result.Data {
+					if !supportsToolUse(m.SupportedParameters) {
+						continue // Skip models that don't support tool use
+					}
+					
+					// Extract display name from full model name
+					parts := strings.Split(m.ID, "/")
+					displayName := parts[len(parts)-1]
+					
+					// Apply model filter if it exists
+					if !isModelInFilter(displayName, modelFilter) {
+						continue // Skip models not in filter
+					}
+					
+					newModels = append(newModels, map[string]interface{}{
+						"name":        displayName,
+						"model":       displayName,
+						"modified_at": currentTime,
+						"size":        270898672,
+						"digest":      "9077fe9d2ae1a4a41a868836b56b8163731a8fe16621397028c2c76f838c6907",
+						"details": map[string]interface{}{
+							"parent_model":       "",
+							"format":             "gguf",
+							"family":             "tool-enabled",
+							"families":           []string{"tool-enabled"},
+							"parameter_size":     "varies",
+							"quantization_level": "Q4_K_M",
+						},
+					})
+				}
+			} else {
+				// Standard non-free mode: get all models from provider
+				models, err := provider.GetModels()
+				if err != nil {
+					slog.Error("Error getting models", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+					return
+				}
+				filter := modelFilter
+				newModels = make([]map[string]interface{}, 0, len(models))
+				for _, m := range models {
+					// Если фильтр пустой, значит пропускаем проверку и берём все модели
+					if len(filter) > 0 {
+						if _, ok := filter[m.Model]; !ok {
+							continue
+						}
+					}
+					newModels = append(newModels, map[string]interface{}{
+						"name":        m.Name,
+						"model":       m.Model,
+						"modified_at": m.ModifiedAt,
+						"size":        270898672,
+						"digest":      "9077fe9d2ae1a4a41a868836b56b8163731a8fe16621397028c2c76f838c6907",
+						"details":     m.Details,
+					})
+				}
 			}
 		}
 
@@ -564,6 +634,9 @@ func main() {
 	// Add OpenAI-compatible models endpoint
 	r.GET("/v1/models", func(c *gin.Context) {
 		var models []gin.H
+		
+		// Check if tool use filtering is enabled
+		toolUseOnly := strings.ToLower(os.Getenv("TOOL_USE_ONLY")) == "true"
 
 		if freeMode {
 			// In free mode, show only available free models
@@ -603,25 +676,81 @@ func main() {
 			}
 		} else {
 			// Non-free mode: get all models from provider
-			providerModels, err := provider.GetModels()
-			if err != nil {
-				slog.Error("Error getting models", "Error", err)
-				c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error()}})
-				return
-			}
-
-			for _, m := range providerModels {
-				if len(modelFilter) > 0 {
-					if _, ok := modelFilter[m.Model]; !ok {
-						continue
-					}
+			if toolUseOnly {
+				// If tool use filtering is enabled, we need to fetch full model details from OpenRouter
+				req, err := http.NewRequest("GET", "https://openrouter.ai/api/v1/models", nil)
+				if err != nil {
+					slog.Error("Error creating request for models", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error()}})
+					return
 				}
-				models = append(models, gin.H{
-					"id":       m.Model,
-					"object":   "model",
-					"created":  time.Now().Unix(),
-					"owned_by": "openrouter",
-				})
+				req.Header.Set("Authorization", "Bearer "+os.Getenv("OPENAI_API_KEY"))
+				
+				resp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					slog.Error("Error fetching models from OpenRouter", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error()}})
+					return
+				}
+				defer resp.Body.Close()
+				
+				if resp.StatusCode != http.StatusOK {
+					slog.Error("Unexpected status from OpenRouter", "status", resp.Status)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": "Failed to fetch models"}})
+					return
+				}
+				
+				var result orModels
+				if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+					slog.Error("Error decoding models response", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error()}})
+					return
+				}
+				
+				// Filter models based on tool use support and model filter
+				for _, m := range result.Data {
+					if !supportsToolUse(m.SupportedParameters) {
+						continue // Skip models that don't support tool use
+					}
+					
+					// Extract display name from full model name
+					parts := strings.Split(m.ID, "/")
+					displayName := parts[len(parts)-1]
+					
+					// Apply model filter if it exists
+					if !isModelInFilter(displayName, modelFilter) {
+						continue // Skip models not in filter
+					}
+					
+					models = append(models, gin.H{
+						"id":       displayName,
+						"object":   "model",
+						"created":  time.Now().Unix(),
+						"owned_by": "openrouter",
+					})
+				}
+			} else {
+				// Standard non-free mode: get all models from provider
+				providerModels, err := provider.GetModels()
+				if err != nil {
+					slog.Error("Error getting models", "Error", err)
+					c.JSON(http.StatusInternalServerError, gin.H{"error": gin.H{"message": err.Error()}})
+					return
+				}
+
+				for _, m := range providerModels {
+					if len(modelFilter) > 0 {
+						if _, ok := modelFilter[m.Model]; !ok {
+							continue
+						}
+					}
+					models = append(models, gin.H{
+						"id":       m.Model,
+						"object":   "model",
+						"created":  time.Now().Unix(),
+						"owned_by": "openrouter",
+					})
+				}
 			}
 		}
 

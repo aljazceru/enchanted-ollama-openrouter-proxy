@@ -8,6 +8,7 @@ This is heavily vibecoded and may not be production-ready. It is intended for pe
 ## Features
 - **Free Mode (Default)**: Automatically selects and uses free models from OpenRouter with intelligent fallback. Enabled by default unless `FREE_MODE=false` is set.
 - **Model Filtering**: Create a `models-filter/filter` file with model name patterns (one per line). Supports partial matching - `gemini` matches `gemini-2.0-flash-exp:free`. Works in both free and non-free modes.
+- **Tool Use Filtering**: Filter for only free models that support function calling/tool use by setting `TOOL_USE_ONLY=true`. Models are filtered based on their `supported_parameters` containing "tools" or "tool_choice".
 - **Ollama-like API**: The server listens on `11434` and exposes endpoints similar to Ollama (e.g., `/api/chat`, `/api/tags`).
 - **Model Listing**: Fetch a list of available models from OpenRouter.
 - **Model Details**: Retrieve metadata about a specific model.
@@ -31,6 +32,11 @@ The proxy operates in **free mode** by default, automatically selecting from ava
 
     # To disable free mode and use all available models
     export FREE_MODE=false
+    export OPENAI_API_KEY="your-openrouter-api-key"
+    ./ollama-proxy
+
+    # To only use free models that support tool use/function calling
+    export TOOL_USE_ONLY=true
     export OPENAI_API_KEY="your-openrouter-api-key"
     ./ollama-proxy
 
@@ -128,6 +134,7 @@ curl -X POST http://localhost:11434/v1/chat/completions \
    ```bash
    OPENAI_API_KEY=your-openrouter-api-key
    FREE_MODE=true
+   TOOL_USE_ONLY=false
    ```
 
 
@@ -136,7 +143,11 @@ curl -X POST http://localhost:11434/v1/chat/completions \
    mkdir -p models-filter
    echo "gemini" > models-filter/filter  # Only show Gemini models
    ```
-4. **Run with Docker Compose**:
+
+4. **Optional: Enable tool use filtering**:
+   Set `TOOL_USE_ONLY=true` in your `.env` file to only use models that support function calling/tool use. This filters models based on their `supported_parameters` containing "tools" or "tool_choice".
+
+5. **Run with Docker Compose**:
    ```bash
    docker compose up -d
    ```
@@ -148,6 +159,9 @@ The service will be available at `http://localhost:11434`.
 ```bash
 docker build -t ollama-proxy .
 docker run -p 11434:11434 -e OPENAI_API_KEY="your-openrouter-api-key" ollama-proxy
+
+# To enable tool use filtering
+docker run -p 11434:11434 -e OPENAI_API_KEY="your-openrouter-api-key" -e TOOL_USE_ONLY=true ollama-proxy
 ```
 
 

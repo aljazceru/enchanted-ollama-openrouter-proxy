@@ -12,9 +12,10 @@ import (
 
 type orModels struct {
 	Data []struct {
-		ID            string `json:"id"`
-		ContextLength int    `json:"context_length"`
-		TopProvider   struct {
+		ID                   string   `json:"id"`
+		ContextLength        int      `json:"context_length"`
+		SupportedParameters  []string `json:"supported_parameters"`
+		TopProvider          struct {
 			ContextLength int `json:"context_length"`
 		} `json:"top_provider"`
 		Pricing struct {
@@ -22,6 +23,16 @@ type orModels struct {
 			Completion string `json:"completion"`
 		} `json:"pricing"`
 	} `json:"data"`
+}
+
+// supportsToolUse checks if a model supports tool use by looking for "tools" in supported_parameters
+func supportsToolUse(supportedParams []string) bool {
+	for _, param := range supportedParams {
+		if param == "tools" || param == "tool_choice" {
+			return true
+		}
+	}
+	return false
 }
 
 func fetchFreeModels(apiKey string) ([]string, error) {
@@ -42,6 +53,10 @@ func fetchFreeModels(apiKey string) ([]string, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, err
 	}
+	
+	// Check if tool use filtering is enabled
+	toolUseOnly := strings.ToLower(os.Getenv("TOOL_USE_ONLY")) == "true"
+	
 	type item struct {
 		id  string
 		ctx int
@@ -49,6 +64,11 @@ func fetchFreeModels(apiKey string) ([]string, error) {
 	var items []item
 	for _, m := range result.Data {
 		if m.Pricing.Prompt == "0" && m.Pricing.Completion == "0" {
+			// If tool use filtering is enabled, skip models that don't support tools
+			if toolUseOnly && !supportsToolUse(m.SupportedParameters) {
+				continue
+			}
+			
 			ctx := m.TopProvider.ContextLength
 			if ctx == 0 {
 				ctx = m.ContextLength
